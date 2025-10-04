@@ -1,0 +1,14 @@
+{
+  "name": "algorhythmn-monorepo",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix frontend install",
+    "frontend": "npm --prefix frontend run dev",
+    "backend": "uv run --with backend/requirements_api.txt -- python -m backend.api_server",
+    "dev": "npm-run-all --parallel backend frontend",
+    "test": "python3 -m pytest tests/test_utils.py tests/test_candidates_gen.py tests/test_filter_candidates.py"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}

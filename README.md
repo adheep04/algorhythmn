@@ -19,21 +19,17 @@ CLAUDE_API_KEY=...
 
 This file is git‑ignored; keep it local.
 
-## Backend setup
+## Backend setup (uv)
+
+This project uses [uv](https://github.com/astral-sh/uv) so you don’t have to manage Python virtualenvs manually.
+
+Install dependencies and start the API in one shot:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements_api.txt
+uv run --with backend/requirements_api.txt -- python -m backend.api_server
 ```
 
-Start the API:
-
-```bash
-python -m backend.api_server
-```
-
-The Flask server listens on `http://localhost:5000`.
+`uv` caches the environment under the hood; repeat runs are instant. The server listens on `http://localhost:5000`.
 
 ### CLI workflow
 
@@ -47,13 +43,24 @@ The command streams stage updates while it queries Spotify/MusicBrainz/AcousticB
 
 ## Frontend setup
 
+From the repo root:
+
 ```bash
-cd frontend
-npm install
-npm run dev
+npm install          # installs npm-run-all and bootstraps frontend deps
+npm run setup        # installs frontend dependencies (runs npm --prefix frontend install)
+npm run dev          # starts backend (via uv) and frontend concurrently
 ```
 
-The Vite dev server boots on `http://localhost:3000` and proxies `/api/*` calls to the Flask backend (see `frontend/vite.config.js`). When both services are up:
+`npm run dev` launches the Vite dev server on `http://localhost:3000` with a proxy to `http://localhost:5000`, and starts the Flask API via `uv run ...`. Stop both with `Ctrl+C`.
+
+You can also run the pieces individually:
+
+```bash
+npm run backend    # uv-run Flask API only
+npm run frontend   # frontend dev server only
+```
+
+When both services are up:
 
 1. Swipe through the seeded “popular artists”.
 2. The frontend posts each rating to `/api/rate-artist` (logged server‑side) and, once done, sends the entire set to `/api/recommendations`.
