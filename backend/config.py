@@ -53,6 +53,8 @@ CACHE_NAMESPACES = {
     "artist_details": "artist_details",
     "embeddings": "embeddings",
     "audio_features": "audio_features",
+    "musicbrainz": "musicbrainz",
+    "acousticbrainz": "acousticbrainz",
 }
 
 # Misc operational constants

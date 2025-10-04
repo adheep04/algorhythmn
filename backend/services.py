@@ -139,6 +139,109 @@ class ClaudeLLMClient(LLMClientInterface, RankingLLMProtocol):
         return json.dumps({"preferences": payload})
 
 
+class AcousticBrainzClient:
+    """Client for MusicBrainz + AcousticBrainz feature lookups."""
+
+    musicbrainz_url = "https://musicbrainz.org/ws/2/recording/"
+    acousticbrainz_base = "https://acousticbrainz.org/api/v1"
+
+    def __init__(
+        self,
+        *,
+        session: Optional[requests.Session] = None,
+        user_agent: str = "HackathonBestTeam/0.1 (https://github.com/adheep04/algorhythmn)",
+        cache_client: Optional[cache.InMemoryCache] = None,
+    ) -> None:
+        self.session = session or requests.Session()
+        self.user_agent = user_agent
+        self.cache_client = cache_client
+
+    def lookup_features(self, track_title: str, artist_name: str) -> Optional[Dict[str, float]]:
+        if not track_title or not artist_name:
+            return None
+        cache_key = cache.build_cache_key(track_title.casefold(), artist_name.casefold())
+        namespace = config.CACHE_NAMESPACES["acousticbrainz"]
+        if self.cache_client:
+            cached = self.cache_client.get(namespace, cache_key)
+            if cached is not None:
+                return cached
+
+        mbid = self._lookup_musicbrainz_mbid(track_title, artist_name)
+        if not mbid:
+            if self.cache_client:
+                self.cache_client.set(namespace, cache_key, None)
+            return None
+
+        data = self._fetch_highlevel(mbid)
+        if not data:
+            if self.cache_client:
+                self.cache_client.set(namespace, cache_key, None)
+            return None
+
+        features = self._extract_features(data)
+        if self.cache_client:
+            self.cache_client.set(namespace, cache_key, features)
+        return features
+
+    def _lookup_musicbrainz_mbid(self, track_title: str, artist_name: str) -> Optional[str]:
+        query = f'recording:"{track_title}" AND artist:"{artist_name}"'
+        params = {"query": query, "fmt": "json", "limit": 1}
+        headers = {"User-Agent": self.user_agent}
+        response = self.session.get(
+            self.musicbrainz_url,
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        recordings = payload.get("recordings") or []
+        if not recordings:
+            return None
+        return recordings[0].get("id")
+
+    def _fetch_highlevel(self, mbid: str) -> Optional[Dict[str, Any]]:
+        response = self.session.get(
+            f"{self.acousticbrainz_base}/{mbid}/high-level",
+            headers={"User-Agent": self.user_agent},
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return None
+        return response.json()
+
+    @staticmethod
+    def _extract_features(payload: Dict[str, Any]) -> Dict[str, float]:
+        highlevel = payload.get("highlevel", {})
+
+        def probability(node: Optional[Dict[str, Any]], label: str) -> Optional[float]:
+            if not node:
+                return None
+            all_values = node.get("all") or {}
+            value = all_values.get(label)
+            if value is None:
+                return None
+            try:
+                return utils.clamp(float(value))
+            except (TypeError, ValueError):
+                return None
+
+        features: Dict[str, float] = {}
+        mappings = {
+            "danceability": (highlevel.get("danceability"), "danceable"),
+            "energy": (highlevel.get("mood_aggressive"), "aggressive"),
+            "valence": (highlevel.get("mood_happy"), "happy"),
+            "acousticness": (highlevel.get("mood_acoustic"), "acoustic"),
+            "instrumentalness": (highlevel.get("voice_instrumental"), "instrumental"),
+        }
+        for dimension, (node, label) in mappings.items():
+            value = probability(node, label)
+            if value is not None:
+                features[dimension] = value
+        return features
+
+
 class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
     """Spotify Web API client supporting candidate generation and ranking needs."""
 
@@ -152,6 +255,8 @@ class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
         *,
         market: str = "US",
         session: Optional[requests.Session] = None,
+        cache_client: Optional[cache.InMemoryCache] = None,
+        acousticbrainz_client: Optional[AcousticBrainzClient] = None,
     ) -> None:
         env.load_env()
         self.client_id = client_id
@@ -160,6 +265,11 @@ class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
         self.session = session or requests.Session()
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
+        self.cache_client = cache_client
+        self.acousticbrainz_client = acousticbrainz_client or AcousticBrainzClient(
+            session=self.session,
+            cache_client=cache_client,
+        )
 
     # Candidate generation methods -------------------------------------------
     def search_artists(self, query: str, limit: int = config.MAX_RESULTS_PER_QUERY) -> List[Dict[str, Any]]:
@@ -211,6 +321,7 @@ class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
         if not track_ids:
             return {}
 
+        features: List[Dict[str, Any]] = []
         try:
             features_response = self._request(
                 "GET",
@@ -218,12 +329,10 @@ class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
                 params={"ids": ",".join(track_ids)},
             )
         except requests.HTTPError as error:  # type: ignore[attr-defined]
-            if getattr(error.response, "status_code", None) == 403:
-                return {}
-            raise
-        features = features_response.get("audio_features", [])
-        if not features:
-            return {}
+            if getattr(error.response, "status_code", None) != 403:
+                raise
+        else:
+            features = features_response.get("audio_features", []) or []
 
         aggregated: Dict[str, float] = {
             dimension: 0.0 for dimension in config.SPOTIFY_AUDIO_FEATURE_MAP
@@ -238,6 +347,47 @@ class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
                 if transform:
                     numeric = transform(numeric)
                 aggregated[dimension] += numeric
+                counts[dimension] += 1
+
+        averaged = {}
+        for dimension, total in aggregated.items():
+            count = counts[dimension]
+            if count:
+                averaged[dimension] = round(total / count, 4)
+        if averaged:
+            return averaged
+
+        track_infos = [
+            {
+                "id": track.get("id"),
+                "name": track.get("name", ""),
+                "artist": ((track.get("artists") or [{}])[0].get("name", "")),
+            }
+            for track in top_tracks
+        ]
+
+        return self._fetch_audio_features_via_acousticbrainz(track_infos)
+
+    def _fetch_audio_features_via_acousticbrainz(
+        self, track_infos: Sequence[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        if not self.acousticbrainz_client:
+            return {}
+
+        aggregated: Dict[str, float] = {
+            dimension: 0.0 for dimension in config.SPOTIFY_AUDIO_FEATURE_MAP
+        }
+        counts = {dimension: 0 for dimension in config.SPOTIFY_AUDIO_FEATURE_MAP}
+
+        for track in track_infos:
+            features = self.acousticbrainz_client.lookup_features(track.get("name", ""), track.get("artist", ""))
+            if not features:
+                continue
+            for dimension in config.SPOTIFY_AUDIO_FEATURE_MAP:
+                value = features.get(dimension)
+                if value is None:
+                    continue
+                aggregated[dimension] += utils.clamp(float(value))
                 counts[dimension] += 1
 
         averaged = {}
@@ -280,6 +430,14 @@ class SpotifyAPIClient(SpotifyClientInterface, RankingSpotifyProtocol):
             # token likely expired; refresh and retry once
             self._token = None
             return self._request(method, path, params=params, retry=retry + 1)
+        if response.status_code == 429 and retry < 3:
+            retry_after_header = response.headers.get("Retry-After")
+            try:
+                retry_after = float(retry_after_header) if retry_after_header else 1.0
+            except ValueError:
+                retry_after = 1.0
+            time.sleep(max(retry_after, 0.5))
+            return self._request(method, path, params=params, retry=retry + 1)
         response.raise_for_status()
         return response.json()
 
@@ -297,11 +455,16 @@ def build_live_clients(
     env.load_env()
     spotify_id = env.require({"SPOTIFY_CLIENT_ID": "", "SPOTIFY_CLIENT_SECRET": ""})
     claude_key = env.require({"CLAUDE_API_KEY": ""})
+    cache_client = cache_client or cache.InMemoryCache()
+
+    acousticbrainz_client = AcousticBrainzClient(cache_client=cache_client)
 
     spotify_client = SpotifyAPIClient(
         client_id=spotify_id["SPOTIFY_CLIENT_ID"],
         client_secret=spotify_id["SPOTIFY_CLIENT_SECRET"],
         market=spotify_market,
+        cache_client=cache_client,
+        acousticbrainz_client=acousticbrainz_client,
     )
     llm_client = ClaudeLLMClient(
         api_key=claude_key["CLAUDE_API_KEY"],
@@ -312,7 +475,7 @@ def build_live_clients(
     return {
         "spotify_client": spotify_client,
         "llm_client": llm_client,
-        "cache_client": cache_client or cache.InMemoryCache(),
+        "cache_client": cache_client,
     }
 
 
