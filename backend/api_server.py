@@ -9,11 +9,11 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 
-from cache import InMemoryCache
-from candidates_gen import generate_candidates
-from filter_candidates import rank_candidates
-from popular_artist import get_artists_list, get_artists_count
-from services import build_live_clients
+from .cache import InMemoryCache
+from .candidates_gen import generate_candidates
+from .filter_candidates import rank_candidates
+from .popular_artist import get_artists_list, get_artists_count
+from .services import build_live_clients
 
 
 app = Flask(__name__)
