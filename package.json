@@ -4,7 +4,7 @@
   "scripts": {
     "setup": "npm --prefix frontend install",
     "frontend": "npm --prefix frontend run dev",
-    "backend": "sh -c \"uv pip install --requirements backend/requirements_api.txt >/dev/null 2>&1 && uv run python -m backend\"",
+    "backend": "sh -c \"UV_PROJECT_ENVIRONMENT=.uv uv pip sync backend/requirements_api.txt && UV_PROJECT_ENVIRONMENT=.uv uv run python -m backend\"",
     "dev": "npm-run-all --parallel backend frontend",
     "test": "python3 -m pytest tests/test_utils.py tests/test_candidates_gen.py tests/test_filter_candidates.py"
   },

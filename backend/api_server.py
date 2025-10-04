@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, List
 
+import os
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
@@ -173,9 +175,11 @@ def health_check():
 
 
 def main() -> None:  # pragma: no cover - manual execution helper
+    port = int(os.environ.get("FLASK_RUN_PORT") or os.environ.get("PORT") or 5000)
     print("Starting Algorhythmn API server...")
     print(f"Available artists: {get_artists_count()}")
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    print(f"Listening on http://0.0.0.0:{port}")
+    app.run(debug=True, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":  # pragma: no cover
