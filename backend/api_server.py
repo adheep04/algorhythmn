@@ -162,6 +162,7 @@ def get_recommendations():
         return jsonify({"error": str(exc), "status": "error"}), 500
 
 
+
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({
@@ -171,7 +172,11 @@ def health_check():
     })
 
 
-if __name__ == "__main__":  # pragma: no cover - manual execution helper
+def main() -> None:  # pragma: no cover - manual execution helper
     print("Starting Algorhythmn API server...")
     print(f"Available artists: {get_artists_count()}")
     app.run(debug=True, host="0.0.0.0", port=5000)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
